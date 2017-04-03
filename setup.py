@@ -7,9 +7,9 @@ working_set = WorkingSet()
 requirements = ["watchdog>=0.8.0"]
 
 try:
-    working_set.require('paramiko>=1.16.0')
+    working_set.require('paramiko>=1.10.0')
 except DistributionNotFound:
-    reqirements.append('paramiko>=1.16.0')
+    reqirements.append('paramiko>=1.10.0')
 
 setup(name='FolderSync',
 	version='0.1.0',
