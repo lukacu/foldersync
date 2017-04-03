@@ -1,0 +1,145 @@
+#!/usr/bin/python
+# -*- Mode: python; indent-tabs-mode: nil; c-basic-offset: 2; tab-width: 2 -*-
+
+import getopt
+import sys
+import os
+import os.path
+import hashlib
+import time
+import subprocess
+import re
+import fnmatch
+
+try:
+  from watchdog.observers import Observer
+  from watchdog.events import FileSystemEventHandler
+  has_watchdog = True
+except ImportError:
+  has_watchdog = False
+
+from foldersync.storage import create_storage
+
+from foldersync import FolderSync, get_relative_path
+
+IGNORE_FILE = ".syncignore"
+
+if has_watchdog:
+  class WatchdogEventHandler(FileSystemEventHandler):
+    pass
+else:
+  class WatchdogEventHandler(object):
+    pass
+
+class FolderWatcher(FolderSync, WatchdogEventHandler):
+
+  def __init__(self, storage, local_folder, remote_folder, force_update=False):
+    super(FolderWatcher, self).__init__(storage, local_folder, remote_folder, force_update)
+    self._load_ignore(self._local_folder)
+
+  def _load_ignore(self, local_dir):
+    igf = os.path.join(local_dir, IGNORE_FILE)
+    if not os.path.exists(igf):
+      return
+    f = open(igf, 'r')
+    for rule in f:
+      reg_rule = fnmatch.translate(rule.rstrip('\r\n'))
+      self._ignore.append(re.compile(reg_rule))
+    f.close()
+
+  def _must_ignore(self, item):
+    if item == IGNORE_FILE:
+      return True
+
+    item = os.path.join("/", item)
+    for i in self._ignore:
+      if i.match(item):
+        return True 
+    return False
+
+  def _scan_entry(self, filename_full):
+    filename_rel = get_relative_path(self._local_folder, filename_full)
+
+    if self._must_ignore(filename_rel):
+      return
+
+    super(FolderWatcher, self)._scan_entry(filename_full)
+ 
+  def on_any_event(self, event):
+    pass
+
+  def on_moved(self, event):
+    if not event.is_directory: 
+      self._scan_entry(event.dest_path)
+
+  def on_created(self, event): 
+    if not event.is_directory:
+      self._scan_entry(event.src_path)
+
+  def on_deleted(self, event):
+    pass
+
+  def on_modified(self, event):
+    if not event.is_directory:
+      self._scan_entry(event.src_path)
+
+# protocol://username:password@hostname:port/path
+
+def usage():
+    print 'Usage:'
+    print 'folderwatch [-f] [-w] source_folder_1 destination_folder_1 source_folder_2 destination_folder_2 ...'
+    print ''
+    print 'Username and password will be prompted for if not provided.'
+    print ''
+    exit()
+
+def main():
+
+  force_update = False
+  watch_changes = False
+
+  opts, args = getopt.getopt(sys.argv[1:], 'fw')
+  for name, value in opts:
+    if name == '-f':
+      force_update = True
+    elif name == '-w':
+      if not has_watchdog:
+        sys.stderr.write("Using watch functionality requires the `watchdog` library: http://pypi.python.org/pypi/watchdog/\n")
+        sys.exit(1)
+      watch_changes = True
+
+  if len(args) < 2:
+    usage()
+    return
+
+  folders = []
+
+  if watch_changes:
+    observer = Observer()
+  
+  for i in range(0, len(args), 2):
+    storage, path = create_storage(args[i+1])
+    folder = FolderWatcher(storage, os.path.abspath(args[i]), path, force_update)
+    folder.scan()
+    folders.append(folder)
+    if watch_changes:
+      observer.schedule(folder, path=args[i], recursive=True)
+
+  if watch_changes:
+
+    print ''
+    print 'Monitoring changes ... press Ctrl+C to interrupt.'
+
+    observer.start()
+    try:
+      while True:
+        time.sleep(1)
+    except KeyboardInterrupt:
+      observer.stop()
+
+    observer.join()
+
+if __name__ == "__main__":
+    main()
+
+

@@ -1,0 +1,225 @@
+#!/usr/bin/python
+# -*- Mode: python; indent-tabs-mode: nil; c-basic-offset: 2; tab-width: 2 -*-
+
+import getopt
+import sys
+import os
+import os.path
+import time
+import re
+import json
+
+from foldersync.storage import create_storage
+from foldersync.processors import create_processor, Content
+from foldersync.pattern import Pattern
+from foldersync import FolderSync, get_relative_path, to_unix_path, unix_path_join
+
+sets = {}
+stacks = {}
+
+def create_matchers(data):
+  matchers = list()
+  if type(data) != list:
+    data = [data]
+  for pattern in data:  
+    matchers.append(Pattern.create(pattern))
+  return matchers
+
+def is_string(s):
+  return type(s) == str or type(s) == unicode
+
+class FolderExporter(FolderSync):
+
+  def __init__(self, storage, local_folder, remote_folder, force_update=True):
+    super(FolderExporter, self).__init__(storage, local_folder, remote_folder, force_update)
+    self._rules = []
+
+  def _match_rule(self, filename):
+    for rule in self._rules:
+      if rule.matches(filename):
+        return rule
+    return None
+
+  def _check_folder(self, folder):
+    if len(folder) == 0:
+      return True
+    remote_folder = unix_path_join(self._remote_folder, folder)
+
+    if self._storage.stat(remote_folder):
+      return True
+    else:
+      local_folder = os.path.join(self._local_folder, folder)
+      self._check_folder(os.path.split(folder)[0])
+      self._storage.put(local_folder, remote_folder)
+      return False
+
+  def _get_remote_path(self, entry):
+    filename_rel = get_relative_path(self._local_folder, entry.filename)
+    filename_rel = to_unix_path(filename_rel)
+
+    rule = self._match_rule(filename_rel)
+
+    if rule:
+      (path, filename) = os.path.split(filename_rel)
+      filename = rule.rename(filename)
+      return unix_path_join(self._remote_folder, unix_path_join(path, filename))
+
+    return unix_path_join(self._remote_folder, filename_rel)
+
+  def _put_file(self, entry):
+    filename_rel = get_relative_path(self._local_folder, entry.filename)
+    filename_rel = to_unix_path(filename_rel)
+    remote_filename = self._get_remote_path(entry)
+
+    rule = self._match_rule(filename_rel)
+
+    try:
+      if rule and not os.path.isdir(entry.filename):
+        content = Content(os.path.split(filename_rel)[1], filename=entry.filename)
+        context = {'source_filename' : entry.filename, 'destination_filename' : remote_filename, 'destination' : self._remote_folder, 'source' : self._local_folder}
+        content = rule.process(content, context)
+        self._storage.put(content.get_filename(), remote_filename)
+      else:
+        self._storage.put(entry.filename, remote_filename)
+
+      print '[%s] Exported "%s" to "%s" ...' % (self._local_folder, filename_rel, remote_filename)
+
+    except IOError, e:
+      folder = os.path.split(filename_rel)[0]
+      if self._check_folder(folder):
+        raise e
+      else:
+        self._put_file(entry)
+
+  def _scan_entry(self, filename_full):
+
+    filename_rel = get_relative_path(self._local_folder, filename_full)
+    rule = self._match_rule(filename_rel)
+
+    if rule and rule.ignore:
+        return
+
+    super(FolderExporter, self)._scan_entry(filename_full)
+
+
+class Rule(object):
+  def __init__(self, data):
+    self._includes = []
+    self._excludes = []
+    self._processors = []
+    self._rename = '%(name)s%(ext)s'
+    self.ignore = False
+
+    if 'includes' in data:
+      if is_string(data['includes']) and sets.has_key(data['includes']):
+        self._includes.extend(sets[data['includes']])
+      else:
+        self._includes = create_matchers(data['includes'])
+
+    if 'excludes' in data:
+      if is_string(data['excludes']) and sets.has_key(data['excludes']):
+        self._excludes.extend(sets[data['excludes']])
+      else:
+        self._excludes = create_matchers(data['excludes'])
+
+    if 'ignore' in data:
+      self.ignore = data["ignore"] == True
+
+    if 'process' in data:
+      processors = data["process"]
+      if type(processors) != list:
+        processors = [processors]
+      for processor in processors:
+        if type(processor) == str or type(processor) == unicode:
+          self._processors.extend(stacks[processor])
+        else:
+          self._processors.append(create_processor(processor))
+
+    if 'rename' in data:
+      self._rename = data["rename"].__str__()
+
+  def matches(self, name):
+
+    elements = name.split('/')
+    for pattern in self._excludes:
+      if pattern.match_file(elements):
+        return False
+    
+    for pattern in self._includes:
+      if pattern.match_file(elements):
+        return True
+
+    return len(self._includes) == 0
+
+  def rename(self, filename):
+    if len(self._rename) == 0:
+      return filename
+    (name, ext) = os.path.splitext(filename)
+    return self._rename % {'name' : name, 'ext': ext}
+
+  def process(self, content, context):
+
+    for processor in self._processors:
+      content = processor.process(content, context)
+
+    return content
+
+# protocol://username:password@hostname:port/path
+
+def usage():
+    print 'Usage:'
+    print 'folderexport [-f] export_rules_file'
+    print ''
+    print 'Username and password will be prompted for if not provided.'
+    print ''
+    exit()
+
+def main():
+
+  force_update = False
+
+  opts, args = getopt.getopt(sys.argv[1:], 'f')
+  for name, value in opts:
+    if name == '-f':
+      force_update = True
+
+  if len(args) < 1:
+    usage()
+    return
+
+  config_file = args[0]
+
+  with open(config_file) as fp:
+    config = json.load(fp)
+    fp.close()
+
+  os.chdir(os.path.dirname(os.path.abspath(config_file)))
+
+  if isinstance(config, dict):
+    config = [config]
+
+  for entry in config:
+
+    storage, path = create_storage(entry['destination'])
+    folder = FolderExporter(storage, os.path.abspath(entry["source"]), path, force_update)
+
+    if 'sets' in entry and type(entry["sets"]) == dict:
+      for k, data in entry["sets"].items():
+        sets[k] = create_matchers(data)
+
+    if 'stacks' in entry and type(entry["stacks"]) == dict:
+      for k, data in entry["stacks"].items():
+        if type(data) != list:
+          data = [data]
+        stacks[k] = [create_processor(d) for d in data]
+        
+    if 'rules' in entry and type(entry["rules"]) == list:
+      for rule in entry["rules"]:
+        folder._rules.append(Rule(rule))
+
+    folder.scan()
+
+if __name__ == "__main__":
+    main()
+
+
