@@ -4,7 +4,7 @@ from setuptools import setup
 from pkg_resources import WorkingSet , DistributionNotFound
 working_set = WorkingSet()
 
-requirements = ["watchdog>=0.8.0"]
+requirements = ["watchdog>=0.8.0", 'jinja2>=2.8']
 
 try:
     working_set.require('paramiko>=1.10.0')
