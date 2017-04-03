@@ -47,9 +47,6 @@ def parse_auth(auth, interactive=True):
 
   return auth
 
-from . import ssh, ftp, local
-
-
 def create_storage(uri, interactive=True):
 
   for protocol, regex in URI_REGEX.items():
@@ -58,14 +55,17 @@ def create_storage(uri, interactive=True):
       continue
 
     if protocol == 'local':
+      from . import local
       return local.LocalStorage(), os.path.abspath(uri)
     elif protocol == 'ftp':
+      from . import ftp
       m = m.groupdict(None)
       auth = parse_auth(m['auth'])
       return ftp.FTPStorage(host=m['hostname'], username=auth['username'], password=auth['password'], port=m['port']), m['path']
     elif protocol == 'dummy':
       return DummyStorage(), '/'
     else:
+      from . import ssh
       auth = parse_auth(m.group('auth'))
       return ssh.SSHStorage(host=m.group('hostname'), username=auth['username'], password=auth['password'], private_key=auth['keyfile'], port=m.group('port')), m.group('path')
 

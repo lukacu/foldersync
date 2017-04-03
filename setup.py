@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from distutils.core import setup
+from setuptools import setup
 
 setup(name='FolderSync',
 	version='0.1.0',
@@ -10,5 +10,5 @@ setup(name='FolderSync',
 	url='https://github.com/lukacu/python-foldersync/',
 	packages=['foldersync', 'foldersync.storage', 'foldersync.processors'],
 	scripts=["bin/folderwatch", "bin/folderexport"],
-    requires=["watchdog", "paramiko", "ftplib"],
+    install_requires=["watchdog>=0.8.0", "paramiko>=1.16.0"],
 )
